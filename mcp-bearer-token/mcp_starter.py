@@ -6,13 +6,12 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
 from mcp import ErrorData, McpError
 from mcp.server.auth.provider import AccessToken
-from mcp.types import INVALID_PARAMS, INTERNAL_ERROR
+from mcp.types import TextContent, ImageContent, INVALID_PARAMS, INTERNAL_ERROR
 from pydantic import BaseModel, Field, AnyUrl
 
 import markdownify
 import httpx
 import readabilipy
-from bs4 import BeautifulSoup
 
 # --- Load environment variables ---
 load_dotenv()
@@ -107,19 +106,20 @@ class Fetch:
             if resp.status_code != 200:
                 return ["<error>Failed to perform search.</error>"]
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.find_all("a", class_="result__a", href=True):
-                href = a["href"]
-                if "http" in href:
-                    links.append(href)
-                if len(links) >= num_results:
-                    break
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", class_="result__a", href=True):
+            href = a["href"]
+            if "http" in href:
+                links.append(href)
+            if len(links) >= num_results:
+                break
 
         return links or ["<error>No results found.</error>"]
 
 # --- MCP Server Setup ---
 mcp = FastMCP(
-    "Medical Information MCP Server", # Renamed for broader scope
+    "Job Finder MCP Server",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
 
@@ -170,67 +170,11 @@ async def job_finder(
 
     raise McpError(ErrorData(code=INVALID_PARAMS, message="Please provide either a job description, a job URL, or a search query in user_goal."))
 
-# --- NEW Tool: medicine_side_effects ---
-MedicineSideEffectsDescription = RichToolDescription(
-    description="Finds potential side effects and interactions when taking two or more medicines together.",
-    use_when="Use this to query for drug interactions or combined side effects of multiple medications.",
-    side_effects="Provides information on potential adverse reactions and interactions.",
-)
-
-@mcp.tool(description=MedicineSideEffectsDescription.model_dump_json())
-async def medicine_side_effects(
-    medicines: Annotated[list[str], Field(description="A list of 2 or more medicine names to check for combined side effects.")],
-) -> str:
-    """
-    Searches for information on side effects and interactions when multiple medicines are taken together.
-    """
-    if not medicines or len(medicines) < 2:
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="Please provide at least two medicine names to check for combined side effects."))
-
-    # Construct a search query for drug interactions
-    query = f"side effects of taking {' and '.join(medicines)} together"
-    
-    # Use the existing Fetch.google_search_links to get relevant URLs
-    search_links = await Fetch.google_search_links(query, num_results=3) # Get top 3 relevant links
-
-    if not search_links or "<error>" in search_links[0]:
-        return f"❌ Could not find reliable information on the combined side effects for: {', '.join(medicines)}. Please consult a medical professional."
-
-    # Attempt to fetch content from the first few links and extract relevant information
-    combined_info = []
-    for link in search_links:
-        try:
-            content, _ = await Fetch.fetch_url(link, Fetch.USER_AGENT)
-            # A simple heuristic: look for common keywords related to side effects and interactions
-            relevant_lines = [line.strip() for line in content.split('\n') if
-                              any(keyword in line.lower() for keyword in ["side effect", "interaction", "adverse reaction", "warning", "contraindication"])]
-            
-            if relevant_lines:
-                combined_info.append(f"**From {link}**:\n" + "\n".join(relevant_lines[:5])) # Limit to first 5 relevant lines per link for brevity
-            else:
-                combined_info.append(f"**From {link}**: No direct side effect/interaction information found in simplified content.")
-
-        except McpError as e:
-            combined_info.append(f"**Error fetching {link}**: {e.message}")
-        
-        # Avoid making too many requests rapidly
-        await asyncio.sleep(0.5)
-
-    if not combined_info:
-        return f"Could not retrieve specific side effect information for {', '.join(medicines)} from the search results. Please consult a healthcare provider."
-
-    return (
-        f"💊 **Combined Side Effects and Interactions for**: {', '.join(medicines)}\n\n"
-        f"**Search Query**: _{query}_\n\n"
-        f"---"
-        f"\n\n".join(combined_info) +
-        f"\n\n**Disclaimer**: This information is for general knowledge only and does not replace professional medical advice. Always consult a healthcare professional before taking or combining medications."
-    )
 
 
 # --- Run MCP Server ---
 async def main():
-    print("🚀 Starting Medical Information MCP server on http://0.0.0.0:8086")
+    print("🚀 Starting MCP server on http://0.0.0.0:8086")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=8086)
 
 if __name__ == "__main__":

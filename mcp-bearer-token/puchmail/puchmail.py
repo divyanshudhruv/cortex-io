@@ -279,6 +279,23 @@ async def send_email(
     """
     return await puchmail_manager.send_email(to, subject, body)
 
+
+
+
+# --- Tool: help ---
+@mcp.tool
+async def help_menu() -> str:
+    """
+    Shows the help menu with all available commands and emojis.
+    """
+    return (
+        "ℹ️ **Help Menu**\n"
+        "🔑 - Log in to your mail account\n"
+        "🚪 - Log out from your mail account\n"
+        "✉️ - Send an email\n"
+        "🔗 - Generate Google OAuth authorization URL\n"
+        "✅ - Complete signup with authorization code\n"
+    )
 # --- Run MCP Server ---
 async def main():
     print("🚀 Starting PuchMail MCP server on http://0.0.0.0:8086")
