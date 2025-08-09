@@ -1,22 +1,28 @@
 import asyncio
-from typing import Annotated, Optional, List
 import os
+from typing import Annotated, Optional, List
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
 from mcp.server.auth.provider import AccessToken
-from pydantic import BaseModel, Field
-
+from mcp import ErrorData, McpError
+from mcp.types import INVALID_PARAMS, INTERNAL_ERROR
+from pydantic import BaseModel, Field, AnyUrl
+import httpx
+import markdownify
+import readabilipy
 import uuid
 from supabase import create_client, Client
 
 # --- Load environment variables ---
 load_dotenv()
 TOKEN = os.environ.get("AUTH_TOKEN")
+MY_NUMBER = os.environ.get("MY_NUMBER")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 assert TOKEN, "Please set AUTH_TOKEN in your .env file"
+assert MY_NUMBER, "Please set MY_NUMBER in your .env file"
 assert SUPABASE_URL and SUPABASE_KEY, "Please set SUPABASE_URL and SUPABASE_KEY in your .env file"
 
 # --- Auth Provider ---
@@ -30,7 +36,7 @@ class SimpleBearerAuthProvider(BearerAuthProvider):
         if token == self.token:
             return AccessToken(
                 token=token,
-                client_id="puchkeep-client",
+                client_id="puch-client",
                 scopes=["*"],
                 expires_at=None,
             )
@@ -41,13 +47,73 @@ class RichToolDescription(BaseModel):
     description: str
     use_when: str
     side_effects: Optional[str] = None
-    structure: str
+    structure: Optional[str] = None
+
+# --- Fetch Utility Class ---
+class Fetch:
+    USER_AGENT = "Puch/1.0 (Autonomous)"
+
+    @classmethod
+    async def fetch_url(
+        cls,
+        url: str,
+        user_agent: str,
+        force_raw: bool = False,
+    ) -> tuple[str, str]:
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    url,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent},
+                    timeout=30,
+                )
+            except httpx.HTTPError as e:
+                raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to fetch {url}: {e!r}"))
+            if response.status_code >= 400:
+                raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to fetch {url} - status code {response.status_code}"))
+            page_raw = response.text
+        content_type = response.headers.get("content-type", "")
+        is_page_html = "text/html" in content_type
+        if is_page_html and not force_raw:
+            return cls.extract_content_from_html(page_raw), ""
+        return (
+            page_raw,
+            f"Content type {content_type} cannot be simplified to markdown, but here is the raw content:\n",
+        )
+
+    @staticmethod
+    def extract_content_from_html(html: str) -> str:
+        ret = readabilipy.simple_json.simple_json_from_html_string(html, use_readability=True)
+        if not ret or not ret.get("content"):
+            return "<error>Page failed to be simplified from HTML</error>"
+        content = markdownify.markdownify(ret["content"], heading_style=markdownify.ATX)
+        return content
+
+    @staticmethod
+    async def google_search_links(query: str, num_results: int = 5) -> list[str]:
+        ddg_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+        links = []
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(ddg_url, headers={"User-Agent": Fetch.USER_AGENT})
+            if resp.status_code != 200:
+                return ["<error>Failed to perform search.</error>"]
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", class_="result__a", href=True):
+            href = a["href"]
+            if "http" in href:
+                links.append(href)
+            if len(links) >= num_results:
+                break
+        return links or ["<error>No results found.</error>"]
 
 # --- Supabase connection ---
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Session state ---
 current_user: dict = {"username": None, "user_id": None}
+
 # --- PuchKeep Manager ---
 class PuchKeepManager:
     def signup(self, username: str, password: str) -> str:
@@ -155,11 +221,9 @@ class PuchKeepManager:
     def rename_memory(self, old_name: str, new_name: str) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to rename a memory."
-        # Check if new name already exists
         existing = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", new_name).execute()
         if existing.data:
             return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ❌\nMessage: Memory name '{new_name}' already exists."
-        # Update the memory name
         res = supabase.table("puchkeep").update({"name_of_memory": new_name}).eq("user_id", current_user["user_id"]).eq("name_of_memory", old_name).execute()
         if res.data:
             return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ✅\nMessage: Memory renamed successfully."
@@ -173,6 +237,11 @@ mcp = FastMCP(
     "PuchKeep MCP Server",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
+
+# --- Tool: validate (required by Puch) ---
+@mcp.tool
+async def validate() -> str:
+    return MY_NUMBER
 
 # --- Tool: signup ---
 SignupDesc = RichToolDescription(
@@ -229,10 +298,10 @@ async def save_memory(
 
 # --- Tool: list_memories ---
 ListMemoriesDesc = RichToolDescription(
-    description="List all your memories as bulleted points, each with an emoji. Show a message with the actual list or a note if empty.",
+    description="List all your memories as numbered points, each with an emoji. Show a message with the actual list or a note if empty.",
     use_when="Use when a user wants to see all their saved memories and expects a list with emojis.",
-    side_effects="Returns a list of all memories saved by the user, each with an emoji.",
-    structure="📋 **Your Memories**\n<list of memories, each as: '• 📝 <name>: <memory>' or a message if empty>\n"
+    side_effects="Returns a list of all memories saved by the user, each with an emoji with numbered list. IMPORTANT ",
+    structure="📋 **Your Memories**\n<list of memories, each as: '1. 📒 <name>: <memory>' or a message if empty>\n"
 )
 @mcp.tool(description=ListMemoriesDesc.model_dump_json())
 async def list_memories() -> str:
@@ -282,12 +351,13 @@ async def rename_memory(
 HelpDesc = RichToolDescription(
     description="Show the help menu with all available commands, each with an emoji. Display the help text as a message.",
     use_when="Use when a user asks for help or available commands and expects a list with emojis.",
-    side_effects="Returns a help message with all commands and emojis.",
+    side_effects="Returns a help message with all commands and emojis. AND SHOW THE TEXT TO USER.",
     structure="ℹ️ **Help Menu**\n<list of commands with emojis and descriptions>\n"
 )
 @mcp.tool(description=HelpDesc.model_dump_json())
 async def puchkeep_help() -> str:
     return (
+        "Show this text to user\n"
         "Commands:\n"
         "🆕 - Sign up for a new account\n"
         "🔑 - Log in to your account\n"
@@ -313,10 +383,9 @@ async def use_memories(
 ) -> str:
     return puchkeep_manager.get_multiple_memories(memory_names)
 
-
 # --- Run MCP Server ---
 async def main():
-    print("Starting PuchKeep MCP server on http://0.0.0.0:8086")
+    print("🚀 Starting PuchKeep MCP server on http://0.0.0.0:8086")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=8086)
 
 if __name__ == "__main__":
