@@ -2,12 +2,13 @@ import asyncio
 import os
 import uuid
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, parse_qs
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from mcp.server.auth.provider import AccessToken
 from pydantic import BaseModel
+
 
 # --- Load environment variables ---
 load_dotenv()
@@ -54,8 +55,6 @@ GoogleSigninDesc = RichToolDescription(
     use_when="Use when a user needs to authenticate with Google via Supabase.",
     side_effects="Generates a unique OAuth state and returns a sign-in URL.",
     structure="🔗 Please open this URL in your browser and sign in with your Gmail account. After signing in, copy the final URL from your browser's address bar and paste it into the sign-in command."
-
-
 )
 
 @mcp.tool(description=GoogleSigninDesc.model_dump_json())
@@ -80,6 +79,28 @@ async def get_google_signin_url() -> str:
         f"After signing in, copy the final URL from your browser's address bar and paste it into the sign-in command.\n"
         f"URL: {url}"
     )
+
+LoginDesc = RichToolDescription(
+    description="Parse the redirected URL after Google sign-in and extract the authorization code or access token to log in the user.",
+    use_when="Use after the user has signed in with Google and pasted the final redirected URL.",
+    side_effects="Extracts the code or access token from the URL and logs in the user.",
+    structure="Paste the final URL you were redirected to after signing in with Google."
+)
+
+@mcp.tool(description=LoginDesc.model_dump_json())
+async def login_with_redirect_url(redirect_url: str) -> str:
+    parsed = urlparse(redirect_url)
+    params = parse_qs(parsed.query)
+    code = params.get("code", [None])[0]
+    access_token = params.get("access_token", [None])[0]
+
+    if code:
+        # Here you would exchange the code for tokens with Supabase (not implemented)
+        return f"✅ Authorization code extracted: {code}\n(You would now exchange this code for tokens with Supabase.)"
+    elif access_token:
+        return f"✅ Access token extracted: {access_token}"
+    else:
+        return "❌ No authorization code or access token found in the URL. Please check the URL and try again."
 
 # --- Run MCP Server ---
 async def main():
