@@ -1,3 +1,9 @@
 python-dotenv
 fastmcp
 pydantic
+supabase
+httpx
+markdownify
+readabilipy
+aiofiles
+beautifulsoup4
