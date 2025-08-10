@@ -107,12 +107,11 @@ class PuchMailManager:
         Logs a mail account into the current session by setting the global session ID.
         """
         global current_session_mail_account_id
-        
+      
         response = supabase.table(MAIL_ACCOUNTS_TABLE).select("id").eq("email", email).limit(1).execute()
-        
+      
         if not response.data:
             raise McpError(ErrorData(code=INVALID_PARAMS, message=f"Mail account '{email}' not found. Please complete signup first."))
-
         current_session_mail_account_id = response.data[0]["id"]
         return f"🔑 Logged in with mail account: {email}."
 
@@ -447,15 +446,15 @@ async def complete_gmail_signup(
     except Exception as e:
         raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"An unexpected error occurred during signup completion: {e}"))
 
-@mcp.tool
-async def login_mail(
-    email: Annotated[EmailStr, Field(description="The email address of the mail account to log in with.")]
-) -> str:
-    """
-    Logs you into your PuchMail session using your email address.
-    You must have completed signup for this email first using 'complete_gmail_signup'.
-    """
-    return await puchmail_manager.login_mail_account(email)
+# @mcp.tool
+# async def login_mail(
+#     email: Annotated[EmailStr, Field(description="The email address of the mail account to log in with.")]
+# ) -> str:
+#     """
+#     Logs you into your PuchMail session using your email address.
+#     You must have completed signup for this email first using 'complete_gmail_signup'.
+#     """
+#     return await puchmail_manager.login_mail_account(email)
 
 
 @mcp.tool
