@@ -66,6 +66,12 @@ class AnagramGame:
         if not response.data:
             raise McpError(ErrorData(code=INVALID_PARAMS, message=f"User '{username}' not found. Please sign up or login."))
         return response.data[0]["id"]
+    
+    @staticmethod
+    async def _get_user_points(user_id: str) -> int:
+        """Helper function to get user points."""
+        response = supabase.from_("anagram_users").select("points").eq("id", user_id).limit(1).execute()
+        return response.data[0]["points"]
 
     @staticmethod
     async def _reset_daily_state():
@@ -114,13 +120,14 @@ class AnagramGame:
     @staticmethod
     async def signup_user(username: str, password: str) -> str:
         """Signs up a new user with a plain-text password."""
+        # Strict Prompt: Give a confirmation message.
         # Check if user already exists in the anagram_users table
         response = supabase.from_("anagram_users").select("username").eq("username", username).limit(1).execute()
         if response.data:
             raise McpError(ErrorData(code=INVALID_PARAMS, message="Username already taken."))
 
-        # Create the new user in the anagram_users table
-        new_user = {"username": username, "password": password, "points": 0}
+        # Create the new user in the anagram_users table with is_connected set to False
+        new_user = {"username": username, "password": password, "points": 0, "is_connected": False}
         response = supabase.from_("anagram_users").insert(new_user).execute()
         
         if response.data:
@@ -131,6 +138,7 @@ class AnagramGame:
     @staticmethod
     async def login_user(username: str, password: str) -> str:
         """Logs in a user by verifying their password."""
+        # Strict Prompt: Give a confirmation message.
         response = supabase.from_("anagram_users").select("id, password").eq("username", username).limit(1).execute()
         user_data = response.data
         
@@ -143,10 +151,22 @@ class AnagramGame:
             raise McpError(ErrorData(code=INVALID_PARAMS, message="Incorrect username or password."))
 
     @staticmethod
+    async def logout_user(username: str) -> str:
+        """Logs out the user."""
+        # Strict Prompt: Give a confirmation message.
+        user_id = await AnagramGame._get_user_id_by_username(username)
+        supabase.from_("anagram_users").update({"is_connected": False}).eq("id", user_id).execute()
+        return "You have been logged out successfully. You can now sign in with a different account."
+
+    @staticmethod
     async def get_shuffled_words(username: str) -> list[dict]:
         """Gets the daily words and checks which ones the user has already guessed correctly."""
+        # Strict Prompt: Give a numbered list of scrambled words.
         user_id = await AnagramGame._get_user_id_by_username(username)
         
+        # Set is_connected to True when the user gets the words
+        supabase.from_("anagram_users").update({"is_connected": True}).eq("id", user_id).execute()
+
         # Get the latest words
         response = supabase.from_("daily_words").select("*").order("created_at", desc=False).limit(5).execute()
         daily_words = response.data
@@ -158,66 +178,104 @@ class AnagramGame:
         
         shuffled_words = []
         for word in daily_words:
-            if word["id"] in guessed_word_ids:
-                shuffled_words.append({"shuffled_word": word["word"], "status": "✅ Guessed"})
-            else:
-                shuffled_words.append({"shuffled_word": word["shuffled_word"], "status": "❓ Not Guessed", "id": word["id"]})
+            if word["id"] not in guessed_word_ids:
+                shuffled_words.append({"shuffled_word": word["shuffled_word"], "id": word["id"]})
                 
         return shuffled_words
 
     @staticmethod
-    async def submit_guess(username: str, user_guess: str) -> str:
-        """Processes a user's guess for a given word by finding the correct anagram."""
+    async def submit_guess(username: str, user_guesses: str) -> str:
+        """
+        Processes a user's guess for multiple words by finding the correct anagram.
+        Args:
+            username: The username of the player.
+            user_guesses: A string of space-separated words guessed by the user.
+        """
+        # Strict Prompt: Give a list of results for each guess and the current user points.
         user_id = await AnagramGame._get_user_id_by_username(username)
         
-        # Get the daily words to find a potential match
+        # Get the daily words to find potential matches
         response = supabase.from_("daily_words").select("*").order("created_at", desc=False).execute()
-        daily_words = response.data
-        
-        # Find the word_id that matches the user's guess
-        matched_word_data = None
-        for word_entry in daily_words:
-            if user_guess.lower() == word_entry['word'].lower():
-                matched_word_data = word_entry
-                break
-        
-        if not matched_word_data:
-            return "❌ Incorrect guess. This doesn't match any of today's anagrams. Try again!"
-        
-        word_id = matched_word_data["id"]
-        correct_word = matched_word_data["word"]
-        
-        # Check if the user has already solved this word
-        response = supabase.from_("user_progress").select("*").eq("user_id", user_id).eq("word_id", word_id).limit(1).execute()
-        if response.data:
-            return f"You've already solved this word! The answer was '{correct_word}'. You won {AnagramGame.POINTS_PER_WORD} points for it."
+        daily_words = {entry['word'].lower(): entry for entry in response.data}
 
-        # Check user's current guess count for this word
-        response = supabase.from_("user_guesses").select("guess_count").eq("user_id", user_id).eq("word_id", word_id).limit(1).execute()
-        guess_data = response.data
-        guess_count = guess_data[0]["guess_count"] if guess_data else 0
-        
-        if guess_count >= AnagramGame.GUESSES_PER_WORD:
-            return f"You have used all {AnagramGame.GUESSES_PER_WORD} guesses for this word. The correct answer was '{correct_word}'."
-        
-        # Update guess count
-        if guess_data:
-            supabase.from_("user_guesses").update({"guess_count": guess_count + 1}).eq("user_id", user_id).eq("word_id", word_id).execute()
-        else:
-            supabase.from_("user_guesses").insert({"user_id": user_id, "word_id": word_id, "guess_count": 1}).execute()
+        # Get the user's progress for today's words
+        response = supabase.from_("user_progress").select("word_id").eq("user_id", user_id).execute()
+        guessed_word_ids = {item["word_id"] for item in response.data}
 
-        # Correct guess: award points and mark as complete
-        response = supabase.from_("anagram_users").select("points").eq("id", user_id).execute()
-        current_points = response.data[0]["points"]
-        supabase.from_("anagram_users").update({"points": current_points + AnagramGame.POINTS_PER_WORD}).eq("id", user_id).execute()
-        supabase.from_("user_progress").insert({"user_id": user_id, "word_id": word_id}).execute()
-        return f"🎉 Correct! You've earned {AnagramGame.POINTS_PER_WORD} points!"
+        # Split the user's input into individual guesses
+        guesses = [g.strip().lower() for g in user_guesses.split()]
+        
+        results = []
+        words_guessed_in_this_turn = []
+        
+        for guess in guesses:
+            if guess in daily_words:
+                matched_word_data = daily_words[guess]
+                word_id = matched_word_data["id"]
+                correct_word = matched_word_data["word"]
+                
+                # Check if the user has already solved this word or guessed it in this turn
+                if word_id in guessed_word_ids or word_id in words_guessed_in_this_turn:
+                    results.append(f"You already solved '{correct_word}'.")
+                    continue
+                
+                # Check user's current guess count for this word
+                response = supabase.from_("user_guesses").select("guess_count").eq("user_id", user_id).eq("word_id", word_id).limit(1).execute()
+                guess_data = response.data
+                guess_count = guess_data[0]["guess_count"] if guess_data else 0
+                
+                if guess_count >= AnagramGame.GUESSES_PER_WORD:
+                    results.append(f"You used all {AnagramGame.GUESSES_PER_WORD} guesses for '{correct_word}'.")
+                    continue
+                
+                # Update guess count
+                if guess_data:
+                    supabase.from_("user_guesses").update({"guess_count": guess_count + 1}).eq("user_id", user_id).eq("word_id", word_id).execute()
+                else:
+                    supabase.from_("user_guesses").insert({"user_id": user_id, "word_id": word_id, "guess_count": 1}).execute()
+                
+                # Correct guess: award points and mark as complete
+                response = supabase.from_("anagram_users").select("points").eq("id", user_id).execute()
+                current_points = response.data[0]["points"]
+                new_points = current_points + AnagramGame.POINTS_PER_WORD
+                supabase.from_("anagram_users").update({"points": new_points}).eq("id", user_id).execute()
+                supabase.from_("user_progress").insert({"user_id": user_id, "word_id": word_id}).execute()
+                
+                results.append(f"🎉 Correct! '{correct_word}' is an anagram. You earned {AnagramGame.POINTS_PER_WORD} points!")
+                words_guessed_in_this_turn.append(word_id)
+            else:
+                results.append(f"❌ '{guess}' is not a correct guess for any remaining anagrams.")
+
+        user_points = await AnagramGame._get_user_points(user_id)
+        results.append(f"\nYour current points: {user_points}")
+        
+        return "\n".join(results)
     
     @staticmethod
     async def get_leaderboard() -> list[dict]:
-        """Gets the top 10 users by points."""
+        """
+        Retrieves the top 10 users by points for the Anagram Game.
+        Strict Prompt: Give leaderboard in a tabulated manner.
+        """
         response = supabase.from_("anagram_users").select("username, points").order("points", desc=True).limit(10).execute()
-        return "DONT THINK ANYTHING, SHOW THE ACTUALL RESPONSE DATA GIVEN AND CONVERT INTO A TOP 10 LEADERBOARD FORMAT AND THEN SHOW THE LEADERBOARD"+response.data
+        leaderboard = response.data
+        # Format the leaderboard as a table
+        table = "📝 **Anagram Game Leaderboard**\n\n"
+        table += "| Rank | Username | Points |\n"
+        table += "|------|----------|--------|\n"
+        for idx, entry in enumerate(leaderboard, 1):
+            table += f"| {idx} | {entry['username']} | {entry['points']} |\n"
+        table = table + " use this tabulated data to send the leaderbaord, no matter what data is in it"
+        return table
+
+    @staticmethod
+    async def leave_game_tool(username: str) -> str:
+        """Provides a message for leaving the game."""
+        # Strict Prompt: Give a confirmation message.
+        user_id = await AnagramGame._get_user_id_by_username(username)
+        supabase.from_("anagram_users").update({"is_connected": False}).eq("id", user_id).execute()
+        return "You have left the game. You can restart by signing up or logging in with your username."
+
 
 # --- MCP Server Setup ---
 mcp = FastMCP(
@@ -231,72 +289,125 @@ async def validate() -> str:
     """A required validation tool."""
     return MY_NUMBER
 
-# --- Tool: anagram_game ---
-AnagramGameDescription = RichToolDescription(
-    description="A daily anagram game where users can sign up, log in, get words, submit guesses, and view the leaderboard.",
-    use_when="Use this to play the daily anagram game, check your progress, or see the top players.",
-    side_effects="Creates a user account, authenticates a user, or updates user points and game progress on correct guesses.",
-)
-
-@mcp.tool(description=AnagramGameDescription.model_dump_json())
-async def anagram_game(
-    command: Annotated[Literal["signup", "login", "get_words", "submit_guess", "leaderboard"], Field(description="The command to execute.")],
-    username: Annotated[str | None, Field(description="The user's unique username. Required for 'signup', 'login', 'get_words', 'submit_guess' and 'leaderboard'.")] = None,
-    password: Annotated[str | None, Field(description="The user's password. Required for 'signup' and 'login'.")] = None,
-    word_id: Annotated[str | None, Field(description="The ID of the word to guess. Required for 'submit_guess'.")] = None,
-    guess: Annotated[str | None, Field(description="The user's guess for the word. Required for 'submit_guess'.")] = None,
+@mcp.tool
+async def signup(
+    username: Annotated[str, Field(description="The user's unique username.")],
+    password: Annotated[str, Field(description="The user's password.")]
 ) -> str:
     """
-    Handles all commands for the Anagram Game.
+    Signs up a new user for the Anagram Game.
     """
-    # Check for daily reset before executing any command
+    return await AnagramGame.signup_user(username, password)
+
+@mcp.tool
+async def login(
+    username: Annotated[str, Field(description="The user's unique username.")],
+    password: Annotated[str, Field(description="The user's password.")]
+) -> str:
+    """
+    Logs in a user to the Anagram Game.
+    """
+    return await AnagramGame.login_user(username, password)
+
+@mcp.tool
+async def logout(
+    username: Annotated[str, Field(description="The user's unique username.")]
+) -> str:
+    """
+    Logs out the current user from the Anagram Game.
+    """
+    return await AnagramGame.logout_user(username)
+
+@mcp.tool
+async def get_words(
+    username: Annotated[str, Field(description="The user's unique username.")]
+) -> str:
+    """
+    Retrieves the list of scrambled anagram words for the day for a logged-in user.
+    """
     await AnagramGame._check_for_daily_reset()
+    words_for_today = await AnagramGame.get_shuffled_words(username)
+    if not words_for_today:
+        user_points = await AnagramGame._get_user_points(await AnagramGame._get_user_id_by_username(username))
+        return f"🥳 Excellent! You've solved all of today's anagrams. Your final score is {user_points} points. You can 'leave_game' or 'logout' or wait for the next daily challenge to begin."
     
-    if command == "signup":
-        if not username or not password:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message="`username` and `password` are required for 'signup'."))
-        return await AnagramGame.signup_user(username, password)
+    output = "📝 **Today's Anagram Words**\n\n"
+    for i, word in enumerate(words_for_today, 1):
+        output += f"{i}. `{word['shuffled_word']}`\n"
     
-    elif command == "login":
-        if not username or not password:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message="`username` and `password` are required for 'login'."))
-        return await AnagramGame.login_user(username, password)
+    
+    output += "\nTry to unscramble them! You can submit multiple guesses at once, e.g., 'submit_guess', guess='word1 word2'. You can also 'leave_game' or 'logout'."
+    output += " show the words in a numbered list format, no change"
+    return output
 
-    if not username:
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="A `username` is required for this command. Please login first."))
+@mcp.tool
+async def submit_guess(
+    username: Annotated[str, Field(description="The user's unique username.")],
+    guess: Annotated[str, Field(description="The user's guess for the word. It can be a single word or multiple space-separated words.")]
+) -> str:
+    """
+    Submits a user's guess for the daily anagrams.
+    """
+    await AnagramGame._check_for_daily_reset()
+    result_message = await AnagramGame.submit_guess(username, guess)
     
-    if command == "get_words":
-        words_for_today = await AnagramGame.get_shuffled_words(username)
-        if not words_for_today:
-            return "No words available for today."
-        
-        output = "📝 **Today's Anagram Words**\n\n"
-        for word in words_for_today:
-            if 'id' in word:
-                output += f"- `{word['shuffled_word']}`\n"
-            else:
-                output += f"- `{word['shuffled_word']}` ({word['status']})\n"
-        
-        return output
-
-    elif command == "submit_guess":
-        if not guess:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message="`guess` is required for 'submit_guess'."))
-        return await AnagramGame.submit_guess(username, guess)
-
-    elif command == "leaderboard":
-        leaderboard = await AnagramGame.get_leaderboard()
-        if not leaderboard:
-            return "No players on the leaderboard yet."
-            
-        output = "🏆 **Anagram Game Leaderboard**\n\n"
-        for i, player in enumerate(leaderboard):
-            output += f"{i + 1}. {player['username']} - {player['points']} points\n"
-        
-        return output
-    
+    # After a guess, check if all words are solved
+    words_for_today = await AnagramGame.get_shuffled_words(username)
+    if not words_for_today:
+        user_points = await AnagramGame._get_user_points(await AnagramGame._get_user_id_by_username(username))
+        result_message += f"\n\n🥳 Congratulations! You've solved all of today's anagrams!"
+        result_message += f" Your final score is {user_points} points"
+        result_message += f"\nYou can 'leave_game' or 'logout' or wait for the next daily challenge to begin."
+        result_message += "show the final score and options to leave or logout, no change"
     else:
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="Invalid command. Use 'signup', 'login', 'get_words', 'submit_guess', or 'leaderboard'."))
+        result_message += f"\n\nTry another guess. You can also check the 'leaderboard', 'leave_game' or 'logout'."
+    
+    return result_message
+
+@mcp.tool
+async def leaderboard() -> str:
+    """
+    Retrieves the top 10 users by points for the Anagram Game.
+    Strict Prompt: Give leaderboard in a tabulated manner.
+    """
+    # Strict Prompt: Give leaderboard in a tabulated manner.
+    leaderboard = await AnagramGame.get_leaderboard()
+    if not leaderboard:
+        return "No players on the leaderboard yet."
+        
+    # Format the leaderboard as a Markdown table
+    output = "🏆 **Anagram Game Leaderboard**\n\n"
+    output += "| Rank | Username | Points |\n"
+    output += "|---|---|---|\n"
+    if isinstance(leaderboard, list):
+        output += "\n".join(leaderboard)
+    else:
+        output += leaderboard
+    output+= " show leaderboard of anagram game in tabulated format like this. no change"
+    return output
+
+@mcp.tool
+async def leave_game(
+    username: Annotated[str, Field(description="The user's unique username.")]
+) -> str:
+    """
+    Allows the user to leave the current game session.
+    """
+    return await AnagramGame.leave_game_tool(username)
+
+@mcp.tool
+async def count_connected_users() -> str:
+    """
+    Counts the number of currently connected users. Using the format given
+    """
+    # Strict Prompt: Return the number of connected users with a text.
+    response = supabase.from_("anagram_users").select("*").eq("is_connected", True).execute()
+    count = len(response.data)
+    output = "🔢 Realtime user count: "
+    output += f"In realtime, there are currently {count} users connected to the game."
+    output += " show the number of connected users in a text format like this. no change"
+    return output
+
 
 # --- Run MCP Server ---
 async def main():
