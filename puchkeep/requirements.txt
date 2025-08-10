@@ -1,9 +1,9 @@
 python-dotenv
 fastmcp
 pydantic
-httpx
 supabase
-google-auth
-google-auth-oauthlib
+httpx
 markdownify
 readabilipy
+aiofiles
+beautifulsoup4

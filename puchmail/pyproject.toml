@@ -1,0 +1,15 @@
+[project]
+name = "puchmail"
+version = "0.1.0"
+description = "PuchMail MCP server and tools"
+authors = ["Divyanshu Dhruv <divyanshudhruv@proton.me>"]
+requires-python = ">=3.8"
+
+[project.dependencies]
+python-dotenv = "*"
+fastmcp = "*"
+pydantic = "*"
+httpx = "*"
+supabase = "*"
+google-auth = "*"
+google-auth-oauthlib = "*"

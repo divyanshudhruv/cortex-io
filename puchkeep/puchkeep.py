@@ -1,6 +1,7 @@
 import asyncio
 import os
-from typing import Annotated, Optional, List
+from typing import Annotated, Optional, List, Dict
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
@@ -13,6 +14,9 @@ import markdownify
 import readabilipy
 import uuid
 from supabase import create_client, Client
+from bs4 import BeautifulSoup # Added for Fetch class
+import aiofiles # For asynchronous file operations
+import shutil # For creating directories if needed
 
 # --- Load environment variables ---
 load_dotenv()
@@ -49,7 +53,7 @@ class RichToolDescription(BaseModel):
     side_effects: Optional[str] = None
     structure: Optional[str] = None
 
-# --- Fetch Utility Class ---
+# --- Fetch Utility Class (No changes as it's a general utility) ---
 class Fetch:
     USER_AGENT = "Puch/1.0 (Autonomous)"
 
@@ -82,62 +86,55 @@ class Fetch:
             f"Content type {content_type} cannot be simplified to markdown, but here is the raw content:\n",
         )
 
-    @staticmethod
-    def extract_content_from_html(html: str) -> str:
-        ret = readabilipy.simple_json.simple_json_from_html_string(html, use_readability=True)
-        if not ret or not ret.get("content"):
-            return "<error>Page failed to be simplified from HTML</error>"
-        content = markdownify.markdownify(ret["content"], heading_style=markdownify.ATX)
-        return content
-
-    @staticmethod
-    async def google_search_links(query: str, num_results: int = 5) -> list[str]:
-        ddg_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
-        links = []
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(ddg_url, headers={"User-Agent": Fetch.USER_AGENT})
-            if resp.status_code != 200:
-                return ["<error>Failed to perform search.</error>"]
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for a in soup.find_all("a", class_="result__a", href=True):
-            href = a["href"]
-            if "http" in href:
-                links.append(href)
-            if len(links) >= num_results:
-                break
-        return links or ["<error>No results found.</error>"]
+   
 
 # --- Supabase connection ---
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Session state ---
-current_user: dict = {"username": None, "user_id": None}
+current_user: Dict[str, Optional[str]] = {"username": None, "user_id": None}
+
+# --- Supabase Table Names ---
+USERS_TABLE = "puchkeep_users"
+MEMORIES_TABLE = "puchkeep_memories"
+
+# --- File Storage Directory ---
+STORAGE_BASE_DIR = "user_storage"
+os.makedirs(STORAGE_BASE_DIR, exist_ok=True) # Ensure the base storage directory exists
+
 
 # --- PuchKeep Manager ---
 class PuchKeepManager:
     def signup(self, username: str, password: str) -> str:
-        existing = supabase.table("users").select("*").eq("username", username).execute()
+        existing = supabase.table(USERS_TABLE).select("*").eq("username", username).execute()
         if existing.data:
             return "🛑 Username already exists. Please choose another one."
-        res = supabase.table("users").insert({"username": username, "password": password}).execute()
+        
+        res = supabase.table(USERS_TABLE).insert({"username": username, "password": password}).execute()
         if res.data:
             return f"🆕 Signup successful! Welcome, {username}."
         return "❌ Failed to create account. Please try again."
 
     def login(self, username: str, password: str) -> str:
         global current_user
-        user = supabase.table("users").select("*").eq("username", username).eq("password", password).execute()
+        user = supabase.table(USERS_TABLE).select("*").eq("username", username).eq("password", password).execute()
         if not user.data:
             return "🚫 Invalid username or password. Please try again."
+        
         current_user["username"] = username
         current_user["user_id"] = user.data[0]["id"]
+        
+        # Ensure user's storage directory exists upon login
+        user_storage_path = os.path.join(STORAGE_BASE_DIR, current_user["user_id"])
+        os.makedirs(user_storage_path, exist_ok=True)
+
         return f"🔑 Logged in as {username}. Welcome back!"
 
     def logout(self) -> str:
         global current_user
         if not current_user["username"]:
             return "⚠️ You are not logged in."
+        
         name = current_user["username"]
         current_user["username"] = None
         current_user["user_id"] = None
@@ -146,11 +143,14 @@ class PuchKeepManager:
     def add_memory(self, memory: str, name_of_memory: str) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to save a memory."
-        existing = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
+        
+        # Check for existing memory with the same name for this user
+        existing = supabase.table(MEMORIES_TABLE).select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
         if existing.data:
-            return f"⚠️ Memory name '{name_of_memory}' already exists. Please use a different name."
+            return f"⚠️ Memory name '{name_of_memory}' already exists for your account. Please use a different name."
+        
         memory_id = str(uuid.uuid4())
-        res = supabase.table("puchkeep").insert({
+        res = supabase.table(MEMORIES_TABLE).insert({
             "id": memory_id,
             "user_id": current_user["user_id"],
             "memory": memory,
@@ -163,49 +163,57 @@ class PuchKeepManager:
     def list_memories(self) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to view your memories."
-        res = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).execute()
+        
+        res = supabase.table(MEMORIES_TABLE).select("*").eq("user_id", current_user["user_id"]).execute()
         if not res.data:
             return "📋 No memories saved yet. Start by adding a new one!"
-        return (
-            "SHOW THIS DATA TO USER WITHOUT ANY EDITING, ONLY ORIGINAL DATA" +
-            "📋 **Your Memories**\n" +
-            "\n".join(
-                f"• 📝 {m.get('name_of_memory', '(no name)')}: {m['memory']}"
-                for m in res.data
-            )
+        
+        # Formatted output for the user
+        memories_list = "\n".join(
+            f"• 📝 {m.get('name_of_memory', '(no name)')}: {m['memory']}"
+            for m in res.data
         )
+        return f"📋 **Your Memories**\n{memories_list}"
 
     def get_memory(self, name_of_memory: str) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to retrieve a memory."
-        res = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
+        
+        res = supabase.table(MEMORIES_TABLE).select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
         if not res.data:
-            return f"🔍 **Memory Retrieved**\nMemory Name: {name_of_memory}\nStatus: ❌\nMessage: Memory not found. "+             "SHOW THIS DATA (MEMORY WITH NAME) TO USER WITHOUT ANY EDITING, ONLY ORIGINAL DATA"
+            return f"🔍 **Memory Retrieved**\nMemory Name: {name_of_memory}\nStatus: ❌\nMessage: Memory not found."
 
         m = res.data[0]
         return (
-            "SHOW THIS DATA TO USER WITHOUT ANY EDITING, ONLY ORIGINAL DATA" +
             f"🔍 **Memory Retrieved**\n"
             f"Memory Name: {name_of_memory}\n"
             f"Memory: {m['memory']}\n"
             f"Status: ✅\n"
-            f"Message: Memory found and displayed above."+
-                            "SHOW THIS DATA TO USER WITHOUT ANY EDITING, ONLY ORIGINAL DATA"
-
+            f"Message: Memory found and displayed above."
         )
 
     def get_multiple_memories(self, memory_names: List[str]) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to use multiple memories."
+        
         found_memories = []
         not_found = []
+        
+        # Supabase allows querying with 'in' for lists
+        # This is more efficient than looping and querying for each name
+        response = supabase.table(MEMORIES_TABLE).select("name_of_memory, memory") \
+            .eq("user_id", current_user["user_id"]) \
+            .in_("name_of_memory", memory_names) \
+            .execute()
+            
+        retrieved_map = {item["name_of_memory"]: item["memory"] for item in response.data}
+
         for name in memory_names:
-            res = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", name).execute()
-            if res.data:
-                m = res.data[0]
-                found_memories.append(f"• 📝 {name}: {m['memory']}")
+            if name in retrieved_map:
+                found_memories.append(f"• 📝 {name}: {retrieved_map[name]}")
             else:
                 not_found.append(name)
+                
         result = ""
         if found_memories:
             result += "📚 **Multiple Memories**\n" + "\n".join(found_memories)
@@ -218,21 +226,48 @@ class PuchKeepManager:
     def delete_memory(self, name_of_memory: str) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to delete a memory."
-        res = supabase.table("puchkeep").delete().eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
-        if res.data:
-            return f"❌ **Memory Deleted**\nMemory Name: {name_of_memory}\nStatus: ✅\nMessage: Memory deleted successfully." + " SHOW COMPLETION MESSAGE ALWAYS TO THE USER WITH THE DETAILS OF COMPLETION"
-        return f"❌ **Memory Deleted**\nMemory Name: {name_of_memory}\nStatus: ❌\nMessage: Memory not found." + " SHOW COMPLETION MESSAGE ALWAYS TO THE USER WITH THE DETAILS OF COMPLETION"
+        
+        res = supabase.table(MEMORIES_TABLE).delete().eq("user_id", current_user["user_id"]).eq("name_of_memory", name_of_memory).execute()
+        
+        if res.data: # Supabase delete returns data if rows were affected
+            return f"❌ **Memory Deleted**\nMemory Name: {name_of_memory}\nStatus: ✅\nMessage: Memory deleted successfully."
+        # If no data is returned, it means no rows were matched for deletion
+        return f"❌ **Memory Deleted**\nMemory Name: {name_of_memory}\nStatus: ❌\nMessage: Memory not found or you don't have permission."
 
     def rename_memory(self, old_name: str, new_name: str) -> str:
         if not current_user["user_id"]:
             return "🔒 Please login first to rename a memory."
-        existing = supabase.table("puchkeep").select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", new_name).execute()
+        
+        # Check if the new name already exists for this user
+        existing = supabase.table(MEMORIES_TABLE).select("*").eq("user_id", current_user["user_id"]).eq("name_of_memory", new_name).execute()
         if existing.data:
             return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ❌\nMessage: Memory name '{new_name}' already exists."
-        res = supabase.table("puchkeep").update({"name_of_memory": new_name}).eq("user_id", current_user["user_id"]).eq("name_of_memory", old_name).execute()
+        
+        res = supabase.table(MEMORIES_TABLE).update({"name_of_memory": new_name, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("user_id", current_user["user_id"]).eq("name_of_memory", old_name).execute()
+        
         if res.data:
-            return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ✅\nMessage: Memory renamed successfully." + " SHOW COMPLETION MESSAGE ALWAYS TO THE USER WITH THE DETAILS OF COMPLETION"
-        return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ❌\nMessage: Memory not found." + " SHOW COMPLETION MESSAGE ALWAYS TO THE USER WITH THE DETAILS OF COMPLETION"
+            return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ✅\nMessage: Memory renamed successfully."
+        return f"✏️ **Memory Renamed**\nOld Name: {old_name}\nNew Name: {new_name}\nStatus: ❌\nMessage: Memory not found."
+
+    # async def _save_list_to_file(self, user_id: str, file_name: str, content_list: List[str]) -> str:
+    #     """Helper to save a list of strings to a user-specific text file."""
+    #     if not user_id:
+    #         return "Error: User ID is missing for file saving."
+
+    #     user_dir = os.path.join(STORAGE_BASE_DIR, user_id)
+    #     os.makedirs(user_dir, exist_ok=True) # Ensure user's directory exists
+
+    #     file_path = os.path.join(user_dir, file_name)
+        
+    #     try:
+    #         # Using aiofiles for asynchronous file writing
+    #         async with aiofiles.open(file_path, mode='w', encoding='utf-8') as f:
+    #             for item in content_list:
+    #                 await f.write(item + '\n')
+    #         return f"📄 File saved successfully to '{file_path}'."
+    #     except Exception as e:
+    #         raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to save file '{file_name}': {e}"))
+
 
 # --- Create manager instance ---
 puchkeep_manager = PuchKeepManager()
@@ -246,6 +281,7 @@ mcp = FastMCP(
 # --- Tool: validate (required by Puch) ---
 @mcp.tool
 async def validate() -> str:
+    """A required validation tool for the Puch framework."""
     return MY_NUMBER
 
 # --- Tool: signup ---
@@ -253,7 +289,7 @@ SignupDesc = RichToolDescription(
     description="Sign up for a new account with a username and password. Show a confirmation message with an emoji indicating success or failure.",
     use_when="Use when a user wants to create a new account and expects a confirmation message with an emoji.",
     side_effects="Creates a new user in the database and returns a message with an emoji showing the result.",
-    structure="🆕 **Signup Result**\nStatus: <success/failure emoji>\nMessage: <confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="🆕 **Signup Result**\nStatus: <success/failure emoji>\nMessage: <confirmation message>"
 )
 @mcp.tool(description=SignupDesc.model_dump_json())
 async def signup(
@@ -267,7 +303,7 @@ LoginDesc = RichToolDescription(
     description="Log in to your account using username and password. Show a message with an emoji indicating login success or failure.",
     use_when="Use when a user wants to log in and expects a confirmation message with an emoji.",
     side_effects="Sets the current session user and returns a message with an emoji showing the result.",
-    structure="🔑 **Login Result**\nStatus: <success/failure emoji>\nMessage: <login confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="🔑 **Login Result**\nStatus: <success/failure emoji>\nMessage: <login confirmation message>"
 )
 @mcp.tool(description=LoginDesc.model_dump_json())
 async def login(
@@ -281,7 +317,7 @@ LogoutDesc = RichToolDescription(
     description="Log out from your account. Show a confirmation message with an emoji.",
     use_when="Use when a user wants to log out and expects a confirmation message with an emoji.",
     side_effects="Clears the current session user and returns a message with an emoji.",
-    structure="🚪 **Logout Result**\nStatus: <success/failure emoji>\nMessage: <logout confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="🚪 **Logout Result**\nStatus: <success/failure emoji>\nMessage: <logout confirmation message>"
 )
 @mcp.tool(description=LogoutDesc.model_dump_json())
 async def logout() -> str:
@@ -292,7 +328,7 @@ SaveMemoryDesc = RichToolDescription(
     description="Save a new memory with a unique name. Show a confirmation message with an emoji and the name of the saved memory.",
     use_when="Use when a user wants to store a new memory and expects a confirmation message with an emoji.",
     side_effects="Adds a new memory to the user's collection and returns a message with an emoji.",
-    structure="💾 **Memory Saved**\nStatus: <success/failure emoji>\nMemory Name: <name_of_memory>\nMessage: <confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="💾 **Memory Saved**\nStatus: <success/failure emoji>\nMemory Name: <name_of_memory>\nMessage: <confirmation message>"
 )
 @mcp.tool(description=SaveMemoryDesc.model_dump_json())
 async def save_memory(
@@ -303,10 +339,10 @@ async def save_memory(
 
 # --- Tool: list_memories ---
 ListMemoriesDesc = RichToolDescription(
-    description="List all your memories as numbered points, each with an emoji. Show a message with the actual list or a note if empty.",
+    description="List all your memories as bullet points, each with an emoji. Show a message with the actual list or a note if empty.",
     use_when="Use when a user wants to see all their saved memories and expects a list with emojis.",
-    side_effects="Returns a list of all memories saved by the user, each with an emoji with numbered list. IMPORTANT ",
-    structure="📋 **Your Memories**\n<list of memories, each as: '1. 📒 <name>: <memory>' or a message if empty>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    side_effects="Returns a list of all memories saved by the user, each with an emoji and bullet points.",
+    structure="📋 **Your Memories**\n<list of memories, each as: '• 📝 <name>: <memory>' or a message if empty>"
 )
 @mcp.tool(description=ListMemoriesDesc.model_dump_json())
 async def list_memories() -> str:
@@ -317,7 +353,7 @@ GetMemoryDesc = RichToolDescription(
     description="Get a memory by its name. Show the memory content with an emoji and a confirmation message.",
     use_when="Use when a user wants to retrieve a specific memory and expects the memory text with an emoji.",
     side_effects="Returns the memory text if found, with an emoji and confirmation.",
-    structure="🔍 **Memory Retrieved**\nMemory Name: <name_of_memory>\nMemory: <memory>\nStatus: <found/not found emoji>\nMessage: <confirmation message>\n"
+    structure="🔍 **Memory Retrieved**\nMemory Name: <name_of_memory>\nMemory: <memory>\nStatus: <found/not found emoji>\nMessage: <confirmation message>"
 )
 @mcp.tool(description=GetMemoryDesc.model_dump_json())
 async def get_memory(
@@ -330,7 +366,7 @@ DeleteMemoryDesc = RichToolDescription(
     description="Delete a memory by its name. This is irreversible. Show a confirmation message with an emoji indicating deletion.",
     use_when="Use when a user wants to remove a memory and expects a confirmation message with an emoji.",
     side_effects="Deletes the memory from the user's collection and returns a message with an emoji.",
-    structure="❌ **Memory Deleted**\nMemory Name: <name_of_memory>\nStatus: <success/failure emoji>\nMessage: <confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="❌ **Memory Deleted**\nMemory Name: <name_of_memory>\nStatus: <success/failure emoji>\nMessage: <confirmation message>"
 )
 @mcp.tool(description=DeleteMemoryDesc.model_dump_json())
 async def delete_memory(
@@ -343,7 +379,7 @@ RenameMemoryDesc = RichToolDescription(
     description="Rename a memory. Show a confirmation message with an emoji and the old and new names.",
     use_when="Use when a user wants to change the name of a memory and expects a confirmation message with an emoji.",
     side_effects="Updates the memory's name in the database and returns a message with an emoji.",
-    structure="✏️ **Memory Renamed**\nOld Name: <old_name>\nNew Name: <new_name>\nStatus: <success/failure emoji>\nMessage: <confirmation message>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="✏️ **Memory Renamed**\nOld Name: <old_name>\nNew Name: <new_name>\nStatus: <success/failure emoji>\nMessage: <confirmation message>"
 )
 @mcp.tool(description=RenameMemoryDesc.model_dump_json())
 async def rename_memory(
@@ -352,42 +388,61 @@ async def rename_memory(
 ) -> str:
     return puchkeep_manager.rename_memory(old_name, new_name)
 
-# --- Tool: help ---
-HelpDesc = RichToolDescription(
-    description="Show the help menu with all available commands, each with an emoji. Display the help text as a message.",
-    use_when="Use when a user asks for help or available commands and expects a list with emojis.",
-    side_effects="Returns a help message with all commands and emojis. AND SHOW THE TEXT TO USER.",
-    structure="ℹ️ **Help Menu**\n<list of commands with emojis and descriptions>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
-)
-@mcp.tool(description=HelpDesc.model_dump_json())
-async def puchkeep_help() -> str:
-    return (
-        "**Help Menu**\n"
-        "Show this text to user\n"
-        "Commands:\n"
-        "🆕 - Sign up for a new account\n"
-        "🔑 - Log in to your account\n"
-        "🚪 - Log out from your account\n"
-        "💾 - Save a new memory\n"
-        "📋 - List all your memories\n"
-        "🔍 - Get a memory by its name\n"
-        "❌ - Delete a memory by its name\n"
-        "✏️ - Rename a memory\n"
-        "📚 - Use multiple memories at once (e.g. /use memory1 memory2 memory3)"
-    )
-
 # --- Tool: use_memories ---
 UseMemoriesDesc = RichToolDescription(
     description="Use multiple memories at once by providing their names. Show the retrieved memories as a list with emojis and indicate if any were not found.",
     use_when="Use when a user wants to retrieve several memories at once and expects a list with emojis and not-found notices.",
     side_effects="Returns the requested memories as a list with emojis and a message for any not found.",
-    structure="📚 **Multiple Memories**\n<list of found memories: '• 📝 <name>: <memory>'>\nNot found: <comma-separated names, if any>\n RETURN AND SHOW THE DATA IN FORMATTED AND ORIGINAL DATA, NO VAGUE DATA"
+    structure="📚 **Multiple Memories**\n<list of found memories: '• 📝 <name>: <memory>'>\nNot found: <comma-separated names, if any>"
 )
 @mcp.tool(description=UseMemoriesDesc.model_dump_json())
 async def use_memories(
     memory_names: Annotated[List[str], Field(description="List of memory names to retrieve")]
 ) -> str:
     return puchkeep_manager.get_multiple_memories(memory_names)
+
+# --- Tool: save_list_to_text_file ---
+SaveListToFileDesc = RichToolDescription(
+    description="Saves a provided list of strings into a text (.txt) file in the user's storage. Each item in the list will be saved on a new line.",
+    use_when="Use when a user wants to save a list of information into a file for later retrieval or export. The output will confirm the file path.",
+    side_effects="Creates or overwrites a .txt file in the user's dedicated storage directory.",
+    structure="📄 **File Save Result**\nStatus: <success/failure emoji>\nMessage: <confirmation message including file path>"
+)
+@mcp.tool(description=SaveListToFileDesc.model_dump_json())
+async def save_list_to_text_file(
+    file_name: Annotated[str, Field(description="The desired name of the text file (e.g., 'my_notes.txt'). It should end with .txt")],
+    content_list: Annotated[List[str], Field(description="A list of strings, where each string will be written as a new line in the file.")]
+) -> str:
+    if not current_user["user_id"]:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="🔒 Please login first to save files."))
+    if not file_name.endswith(".txt"):
+        return f"⚠️ File name '{file_name}' does not end with .txt. Please provide a valid .txt file name."
+    
+    return await puchkeep_manager._save_list_to_file(current_user["user_id"], file_name, content_list)
+
+# --- Tool: help ---
+HelpDesc = RichToolDescription(
+    description="Show the help menu with all available commands, each with an emoji. Display the help text as a message.",
+    use_when="Use when a user asks for help or available commands and expects a list with emojis.",
+    side_effects="Returns a help message with all commands and emojis.",
+    structure="ℹ️ **Help Menu**\nCommands:\n<list of commands with emojis and descriptions>"
+)
+@mcp.tool(description=HelpDesc.model_dump_json())
+async def puchkeep_help() -> str:
+    return (
+        "**Help Menu**\n"
+        "Commands:\n"
+        "🆕 - `signup(username, password)`: Sign up for a new account\n"
+        "🔑 - `login(username, password)`: Log in to your account\n"
+        "🚪 - `logout()`: Log out from your account\n"
+        "💾 - `save_memory(memory, name_of_memory)`: Save a new memory\n"
+        "📋 - `list_memories()`: List all your memories\n"
+        "🔍 - `get_memory(name_of_memory)`: Get a memory by its name\n"
+        "❌ - `delete_memory(name_of_memory)`: Delete a memory by its name\n"
+        "✏️ - `rename_memory(old_name, new_name)`: Rename a memory\n"
+        "📚 - `use_memories(memory_names)`: Use multiple memories at once\n"
+        "📄 - `save_list_to_text_file(file_name, content_list)`: Save a list to a .txt file\n"
+    )
 
 # --- Run MCP Server ---
 async def main():

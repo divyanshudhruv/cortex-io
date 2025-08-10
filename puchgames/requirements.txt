@@ -1,7 +1,3 @@
 python-dotenv
 fastmcp
 pydantic
-httpx
-supabase
-google-auth
-google-auth-oauthlib
