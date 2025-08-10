@@ -5,3 +5,5 @@ httpx
 supabase
 google-auth
 google-auth-oauthlib
+markdownify
+readabilipy
