@@ -1,0 +1,9 @@
+fastmcp
+google-auth
+google-auth-oauthlib
+httpx
+nltk
+pydantic
+python-dotenv
+supabase
+wonderwords

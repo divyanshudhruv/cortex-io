@@ -22,6 +22,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 GMAIL_REDIRECT_URI = "https://developers.google.com/oauthplayground"
+MY_NUMBER = os.environ.get("MY_NUMBER")
 
 assert TOKEN and SUPABASE_URL and SUPABASE_KEY
 assert GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
@@ -198,6 +199,11 @@ mcp = FastMCP(
     "PuchMail MCP Server",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
+
+# --- Tool: validate (required by Puch) ---
+@mcp.tool
+async def validate() -> str:
+    return MY_NUMBER
 
 # --- Tool: generate_auth_url ---
 @mcp.tool
