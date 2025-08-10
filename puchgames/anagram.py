@@ -1,257 +1,277 @@
 import asyncio
+from typing import Annotated, Literal
 import os
-import random
-from typing import Annotated, Optional, Dict
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
-from mcp.server.auth.provider import AccessToken
 from mcp import ErrorData, McpError
+from mcp.server.auth.provider import AccessToken
 from mcp.types import INVALID_PARAMS
-from wonderwords import RandomWord
-import nltk
-from collections import Counter
+from pydantic import BaseModel, Field
 
-# --- Download NLTK word list (only needed once) ---
-# This ensures the 'words' corpus is available for validation.
-try:
-    nltk.data.find('corpora/words')
-except LookupError:
-    print("Downloading NLTK 'words' corpus...")
-    nltk.download('words')
-    print("NLTK 'words' corpus downloaded.")
-
-from nltk.corpus import words as nltk_words
-# Create a set of lowercased English words for efficient lookup
-ENGLISH_WORDS = set(w.lower() for w in nltk_words.words() if w.isalpha())
+# Use supabase-py instead of the new client as it's more straightforward for this use case
+from supabase import create_client, Client
+import random
 
 # --- Load environment variables ---
 load_dotenv()
+
 TOKEN = os.environ.get("AUTH_TOKEN")
-# Assert that the token is loaded, otherwise the server cannot run.
-assert TOKEN, "AUTH_TOKEN environment variable not set!"
+MY_NUMBER = os.environ.get("MY_NUMBER")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+assert TOKEN is not None, "Please set AUTH_TOKEN in your .env file"
+assert MY_NUMBER is not None, "Please set MY_NUMBER in your .env file"
+assert SUPABASE_URL is not None, "Please set SUPABASE_URL in your .env file"
+assert SUPABASE_KEY is not None, "Please set SUPABASE_KEY in your .env file"
+
+# --- Supabase Client Initialization ---
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Auth Provider ---
 class SimpleBearerAuthProvider(BearerAuthProvider):
-    """
-    A simple bearer token authentication provider for FastMCP.
-    Uses a pre-defined token for authentication.
-    """
     def __init__(self, token: str):
         k = RSAKeyPair.generate()
         super().__init__(public_key=k.public_key, jwks_uri=None, issuer=None, audience=None)
         self.token = token
 
-    async def load_access_token(self, token: str) -> Optional[AccessToken]:
-        """
-        Loads an access token if the provided token matches the internal token.
-        """
+    async def load_access_token(self, token: str) -> AccessToken | None:
         if token == self.token:
             return AccessToken(
                 token=token,
-                client_id="anagram-client",
-                scopes=["*"], # All scopes are allowed for this client
-                expires_at=None, # Token does not expire
+                client_id="puch-client",
+                scopes=["*"],
+                expires_at=None,
             )
-        return None # Return None if token is invalid
+        return None
 
-# --- In-memory Game Storage ---
-# Stores current game states, keyed by game_id (default for single-player).
-games: Dict[str, Dict] = {}
-# Initialize RandomWord for generating anagrams.
-rw = RandomWord()
+# --- Rich Tool Description model ---
+class RichToolDescription(BaseModel):
+    description: str
+    use_when: str
+    side_effects: str | None = None
 
-# --- Helper Functions for Game Management ---
+# --- Game Logic and Supabase Interaction ---
+class AnagramGame:
+    POINTS_PER_WORD = 100
+    DAILY_WORDS_COUNT = 5
+    GUESSES_PER_WORD = 5
 
-def get_game(game_id: str = "default") -> Dict:
-    """
-    Retrieves the game state for a given game ID.
-    If the game ID doesn't exist, it initializes a new, inactive game state.
-    """
-    if game_id not in games:
-        games[game_id] = {
-            "word": "",
-            "scrambled": "",
-            "tries_left": 0,
-            "game_over": True
-        }
-    return games[game_id]
+    @staticmethod
+    async def signup_user(username: str, password: str) -> str:
+        """Signs up a new user with a plain-text password."""
+        # Check if user already exists in the anagram_users table
+        response = supabase.from_("anagram_users").select("username").eq("username", username).limit(1).execute()
+        if response.data:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="Username already taken."))
 
-def get_random_word_from_library(length: int = 6) -> str:
-    """
-    Generates a random English word of a specified length using the wonderwords library.
-    It attempts to find a suitable word and validates it against NLTK's English word list.
-    Raises an McpError if a suitable word cannot be found after several attempts.
-    """
-    max_attempts = 10 # Number of times to try finding a word
-    for attempt in range(max_attempts):
-        try:
-            # Try to get a word with specific length and part of speech for better quality
-            word = rw.word(
-                word_min_length=length,
-                word_max_length=length,
-                include_parts_of_speech=["nouns", "adjectives", "verbs"],
-                average_length=length # Helps wonderwords focus on the target length
-            ).lower()
+        # Create the new user in the anagram_users table
+        new_user = {"username": username, "password": password, "points": 0}
+        response = supabase.from_("anagram_users").insert(new_user).execute()
+        
+        if response.data:
+            return f"🎉 User '{username}' signed up successfully! Your user ID is '{response.data[0]['id']}'."
+        else:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="Failed to sign up user."))
+
+    @staticmethod
+    async def login_user(username: str, password: str) -> str:
+        """Logs in a user by verifying their password."""
+        response = supabase.from_("anagram_users").select("id, password").eq("username", username).limit(1).execute()
+        user_data = response.data
+        
+        if not user_data:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="Incorrect username or password."))
             
-            # Validate that the generated word is indeed of the desired length and in English_WORDS
-            if len(word) == length and word in ENGLISH_WORDS:
-                return word
-        except Exception:
-            # wonderwords might raise exceptions if it can't find a word
-            pass # Continue to next attempt
-
-    # If all attempts fail, try to get any random word and validate it
-    try:
-        word = rw.word(include_parts_of_speech=["nouns", "adjectives", "verbs"]).lower()
-        if word in ENGLISH_WORDS:
-            print(f"⚠️ Warning: Could not find a word of exact length {length} after {max_attempts} attempts. Using '{word}' instead.")
-            return word
-    except Exception as e:
-        # If even a general word cannot be found
-        raise McpError(ErrorData(code=INVALID_PARAMS, message=f"❌ Failed to generate any random word: {e}. The word list might be exhausted or too restrictive."))
-    
-    # Final fallback if nothing works
-    raise McpError(ErrorData(code=INVALID_PARAMS, message=f"❌ Could not generate a valid English word of length {length}. Try a different length or fewer restrictions."))
-
-
-def can_form_from_letters(word: str, letters: str) -> bool:
-    """
-    Checks if `word` can be formed using the letters available in `letters`.
-    This uses a multiset comparison (Counter).
-    """
-    return not (Counter(word) - Counter(letters))
-
-# --- Game Logic Functions ---
-
-def start_anagram_game(game_id: str = "default", length: int = 6, tries: int = 5) -> str:
-    """
-    Initializes and starts a new anagram game.
-    A random word is chosen, scrambled, and the game state is reset.
-    """
-    if length < 3: # Minimum reasonable length for an anagram
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="Word length must be at least 3."))
-    if tries < 1: # Minimum reasonable tries
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="Number of tries must be at least 1."))
-
-    word = get_random_word_from_library(length) # Exclusively uses the library for word generation
-    scrambled = ''.join(random.sample(word, len(word)))
-    
-    # Ensure the scrambled word is different from the original word
-    while scrambled == word:
-        scrambled = ''.join(random.sample(word, len(word)))
-        if len(word) == 1: # Avoid infinite loop for single-letter words (though we limit to length >= 3)
-            break
-
-    games[game_id] = {
-        "word": word,
-        "scrambled": scrambled,
-        "tries_left": tries,
-        "game_over": False
-    }
-    return f"🔀 Your anagram: **{scrambled.upper()}**\nYou have {tries} tries to guess the word!"
-
-def guess_anagram(guess: str, game_id: str = "default") -> str:
-    """
-    Processes a user's guess for the current anagram game.
-    Validates the guess, updates game state, and provides feedback.
-    """
-    game = get_game(game_id)
-    if game["game_over"]:
-        raise McpError(ErrorData(code=INVALID_PARAMS, message="🚫 No active game. Start a new one using `new_anagram()`."))
-
-    guess = guess.lower().strip()
-
-    # Comprehensive validation: check if it's an English word AND can be formed from scrambled letters.
-    if not (guess in ENGLISH_WORDS and can_form_from_letters(guess, game["scrambled"])):
-        game["tries_left"] -= 1 # Deduct a try even for invalid format guesses
-        feedback = f"❌ '{guess}' is not a valid English word or cannot be formed from the letters in '{game['scrambled'].upper()}'."
-        if game["tries_left"] <= 0:
-            game["game_over"] = True
-            return f"{feedback}\nOut of tries! The correct word was **{game['word']}**."
+        if password == user_data[0]["password"]:
+            return f"✅ Login successful! Your user ID is '{user_data[0]['id']}'. Use this ID for all game commands."
         else:
-            return f"{feedback}\nTries left: {game['tries_left']}."
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="Incorrect username or password."))
 
+    @staticmethod
+    async def get_daily_words():
+        """
+        Gets the current daily words. If the last set of words is more than 24 hours old,
+        it generates a new set.
+        """
+        # Get the latest words
+        response = supabase.from_("daily_words").select("*").order("created_at", desc=True).limit(5).execute()
+        words_data = response.data
 
-    if guess == game["word"]:
-        game["game_over"] = True
-        return f"✅ Correct! The word was **{game['word']}**."
-    else:
-        game["tries_left"] -= 1
-        if game["tries_left"] <= 0:
-            game["game_over"] = True
-            return f"❌ Out of tries! The main word was **{game['word']}**."
+        # Check if new words need to be generated
+        now = datetime.now(timezone.utc)
+        if not words_data or (now - datetime.fromisoformat(words_data[0]["created_at"])) > timedelta(hours=24):
+            print("Generating new daily words...")
+            # Generate new words (placeholder logic)
+            potential_words = ["python", "anagram", "challenge", "supabase", "developer", "computer", "science", "program", "backend", "frontend"]
+            new_words = random.sample(potential_words, AnagramGame.DAILY_WORDS_COUNT)
+            
+            # Store the new words and their shuffled versions
+            words_to_insert = [
+                {
+                    "word": word,
+                    "shuffled_word": "".join(random.sample(word, len(word))),
+                    "created_at": now.isoformat()
+                }
+                for word in new_words
+            ]
+            response = supabase.from_("daily_words").insert(words_to_insert).execute()
+            return response.data
+        
+        return words_data
+
+    @staticmethod
+    async def get_shuffled_words(user_id: str) -> list[dict]:
+        """Gets the daily words and checks which ones the user has already guessed correctly."""
+        daily_words = await AnagramGame.get_daily_words()
+        
+        # Get the user's progress for today's words
+        word_ids = [word["id"] for word in daily_words]
+        response = supabase.from_("user_progress").select("word_id").eq("user_id", user_id).in_("word_id", word_ids).execute()
+        guessed_word_ids = {item["word_id"] for item in response.data}
+        
+        shuffled_words = []
+        for word in daily_words:
+            if word["id"] in guessed_word_ids:
+                shuffled_words.append({"shuffled_word": word["word"], "status": "✅ Guessed"})
+            else:
+                shuffled_words.append({"shuffled_word": word["shuffled_word"], "status": "❓ Not Guessed", "id": word["id"]})
+                
+        return shuffled_words
+
+    @staticmethod
+    async def submit_guess(user_id: str, word_id: str, user_guess: str) -> str:
+        """Processes a user's guess for a given word."""
+        # Check if the word exists and is the correct answer
+        response = supabase.from_("daily_words").select("*").eq("id", word_id).limit(1).execute()
+        word_data = response.data
+        if not word_data:
+            return "Error: Invalid word ID."
+            
+        correct_word = word_data[0]["word"]
+        
+        # Check user's current guess count for this word
+        response = supabase.from_("user_guesses").select("guess_count").eq("user_id", user_id).eq("word_id", word_id).limit(1).execute()
+        guess_data = response.data
+        guess_count = guess_data[0]["guess_count"] if guess_data else 0
+        
+        # Check if the user has already solved this word
+        response = supabase.from_("user_progress").select("*").eq("user_id", user_id).eq("word_id", word_id).limit(1).execute()
+        if response.data:
+            return f"You've already solved this word! The answer was '{correct_word}'. You won {AnagramGame.POINTS_PER_WORD} points for it."
+
+        if guess_count >= AnagramGame.GUESSES_PER_WORD:
+            return f"You have used all {AnagramGame.GUESSES_PER_WORD} guesses for this word. The correct answer was '{correct_word}'."
+        
+        # Update guess count
+        if guess_data:
+            supabase.from_("user_guesses").update({"guess_count": guess_count + 1}).eq("user_id", user_id).eq("word_id", word_id).execute()
         else:
-            return f"🤷 Incorrect! Tries left: {game['tries_left']}."
+            supabase.from_("user_guesses").insert({"user_id": user_id, "word_id": word_id, "guess_count": 1}).execute()
 
-def get_game_status(game_id: str = "default") -> str:
-    """
-    Returns the current status of the anagram game, including the scrambled word and remaining tries.
-    """
-    game = get_game(game_id)
-    if game["game_over"]:
-        return "ℹ️ No active game. Use `new_anagram()` to start."
-    return f"🔀 Anagram: **{game['scrambled'].upper()}**\nTries left: {game['tries_left']}."
+        if user_guess.lower() == correct_word.lower():
+            # Correct guess: award points and mark as complete
+            response = supabase.from_("anagram_users").select("points").eq("id", user_id).execute()
+            current_points = response.data[0]["points"]
+            supabase.from_("anagram_users").update({"points": current_points + AnagramGame.POINTS_PER_WORD}).eq("id", user_id).execute()
+            supabase.from_("user_progress").insert({"user_id": user_id, "word_id": word_id}).execute()
+            return f"🎉 Correct! You've earned {AnagramGame.POINTS_PER_WORD} points!"
+        else:
+            # Incorrect guess: provide feedback
+            remaining_guesses = AnagramGame.GUESSES_PER_WORD - (guess_count + 1)
+            return f"❌ Incorrect guess. You have {remaining_guesses} guesses remaining."
+    
+    @staticmethod
+    async def get_leaderboard() -> list[dict]:
+        """Gets the top 10 users by points."""
+        response = supabase.from_("anagram_users").select("username, points").order("points", desc=True).limit(10).execute()
+        return response.data
 
 # --- MCP Server Setup ---
 mcp = FastMCP(
-    "Anagram MCP Server",
+    "Anagram Game MCP Server",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
 
-# --- MCP Tools ---
-
+# --- Tool: validate (required by Puch) ---
 @mcp.tool
-async def new_anagram(
-    tries: Annotated[int, "Number of tries the player gets for this game."] = 5,
-    length: Annotated[int, "Desired length of the anagram word."] = 6
+async def validate() -> str:
+    """A required validation tool."""
+    return MY_NUMBER
+
+# --- Tool: anagram_game ---
+AnagramGameDescription = RichToolDescription(
+    description="A daily anagram game where users can sign up, log in, get words, submit guesses, and view the leaderboard.",
+    use_when="Use this to play the daily anagram game, check your progress, or see the top players.",
+    side_effects="Creates a user account, authenticates a user, or updates user points and game progress on correct guesses.",
+)
+
+@mcp.tool(description=AnagramGameDescription.model_dump_json())
+async def anagram_game(
+    command: Annotated[Literal["signup", "login", "get_words", "submit_guess", "leaderboard"], Field(description="The command to execute.")],
+    username: Annotated[str | None, Field(description="The user's unique username. Required for 'signup' and 'login'.")] = None,
+    password: Annotated[str | None, Field(description="The user's password. Required for 'signup' and 'login'.")] = None,
+    user_id: Annotated[str | None, Field(description="The unique user ID for the player. Required for game commands after login.")]= None,
+    word_id: Annotated[str | None, Field(description="The ID of the word to guess. Required for 'submit_guess'.")] = None,
+    guess: Annotated[str | None, Field(description="The user's guess for the word. Required for 'submit_guess'.")] = None,
 ) -> str:
     """
-    🎯 Starts a new anagram game.
-    You can specify the number of `tries` and the `length` of the word.
+    Handles all commands for the Anagram Game.
     """
-    return start_anagram_game(length=length, tries=tries)
+    if command == "signup":
+        if not username or not password:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="`username` and `password` are required for 'signup'."))
+        return await AnagramGame.signup_user(username, password)
+    
+    elif command == "login":
+        if not username or not password:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="`username` and `password` are required for 'login'."))
+        return await AnagramGame.login_user(username, password)
 
-@mcp.tool
-async def guess_word(
-    word: Annotated[str, "Your guess for the anagram. Must be a single word."]
-) -> str:
-    """
-    ⌨️ Submit your guess for the anagram.
-    The guess must be a valid English word that can be formed from the scrambled letters.
-    """
-    return guess_anagram(word)
+    if not user_id:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="A `user_id` is required for this command. Please login first to get your ID."))
+    
+    if command == "get_words":
+        words_for_today = await AnagramGame.get_shuffled_words(user_id)
+        if not words_for_today:
+            return "No words available for today."
+        
+        output = "📝 **Today's Anagram Words**\n\n"
+        for word in words_for_today:
+            # Check for 'id' to determine if it's a new word or a solved one
+            if 'id' in word:
+                output += f"- `ID: {word['id']}` - `{word['shuffled_word']}`\n"
+            else:
+                output += f"- `{word['shuffled_word']}` ({word['status']})\n"
+        
+        return output
 
-@mcp.tool
-async def get_status() -> str:
-    """
-    📋 Get the current status of the anagram game, including the scrambled word and remaining tries.
-    """
-    return get_game_status()
+    elif command == "submit_guess":
+        if not word_id or not guess:
+            raise McpError(ErrorData(code=INVALID_PARAMS, message="`word_id` and `guess` are required for 'submit_guess'."))
+        return await AnagramGame.submit_guess(user_id, word_id, guess)
 
-@mcp.tool
-async def help_menu() -> str:
-    """
-    ℹ️ Shows a list of all available commands and their descriptions for the Anagram Solver.
-    """
-    return (
-        "ℹ️ **Anagram Solver Help**\n"
-        "🎯 - Start new game (`new_anagram(tries: int = 5, length: int = 6)`)\n"
-        "⌨️ - Guess word (`guess_word(word: str)`)\n"
-        "📋 - Show game status (`get_status()`)\n"
-        "🔀 - Scrambled word\n"
-        "✅ - Correct guess / Valid word\n"
-        "❌ - Incorrect guess / Invalid word\n"
-        "🤷 - Incorrect but valid word\n"
-    )
+    elif command == "leaderboard":
+        leaderboard = await AnagramGame.get_leaderboard()
+        if not leaderboard:
+            return "No players on the leaderboard yet."
+            
+        output = "🏆 **Anagram Game Leaderboard**\n\n"
+        for i, player in enumerate(leaderboard):
+            output += f"{i + 1}. {player['username']} - {player['points']} points\n"
+        
+        return output
+    
+    else:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="Invalid command. Use 'signup', 'login', 'get_words', 'submit_guess', or 'leaderboard'."))
 
-# --- Main Server Run Loop ---
+# --- Run MCP Server ---
 async def main():
-    """
-    Starts the FastMCP server for the Anagram Solver.
-    """
     print("🚀 Starting Anagram MCP server on http://0.0.0.0:8086")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=8086)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
