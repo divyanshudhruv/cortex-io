@@ -1,167 +1,72 @@
-# MCP Starter for Puch AI
+# 🧩 MCP Starter Cortex-IO
 
-This is a starter template for creating your own Model Context Protocol (MCP) server that works with Puch AI. It comes with ready-to-use tools for job searching and image processing.
+Welcome to the MCP Starter HKTHN repository! This project is a collection of powerful, ready-to-use Model Context Protocol (MCP) servers for Puch AI, each focused on a unique productivity or information task. All logic and programming for each service is kept in a single Python file—no extra files needed for core functionality.
 
-## What is MCP?
+## 📦 About This Repository
 
-MCP (Model Context Protocol) allows AI assistants like Puch to connect to external tools and data sources safely. Think of it like giving your AI extra superpowers without compromising security.
+This repository is designed for rapid prototyping and deployment of MCP servers for Puch AI. Each MCP service ("puchkeep", "puchmail", "puchgames", "puchmeds", "puchscan", "puchtasks", "puchchat") is implemented in a single, self-contained Python file. This approach makes it easy to:
 
-## What's Included in This Starter?
+- Understand and modify each service
+- Deploy or test any service independently
+- Avoid boilerplate and unnecessary files
 
-### 🎯 Job Finder Tool
-- **Analyze job descriptions** - Paste any job description and get smart insights
-- **Fetch job postings from URLs** - Give a job posting link and get the full details
-- **Search for jobs** - Use natural language to find relevant job opportunities
+> **All logic, tool registration, and server code for each MCP is in one file. No extra files are needed!**
 
-### 🖼️ Image Processing Tool
-- **Convert images to black & white** - Upload any image and get a monochrome version
+## 🚀 MCP Services in This Repo
 
-### 🔐 Built-in Authentication
-- Bearer token authentication (required by Puch AI)
-- Validation tool that returns your phone number
+| Service   | File                     | Description                                                                                        |
+| --------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
+| PuchKeep  | `puchkeep/puchkeep.py`   | Personal memory vault: save, list, retrieve, delete, and manage memories with emoji-rich feedback. |
+| PuchMail  | `puchmail/puchmail.py`   | Secure email sending and management via WhatsApp/Puch AI, with multi-provider support.             |
+| PuchGame  | `puchgames/anagram.py`   | Daily anagram word game: sign up, log in, get words, submit guesses, and view leaderboards.        |
+| PuchMeds  | `puchmeds/puchmeds.py`   | AI-powered medicine info: get side effects, prevention, and posture tips for any medicine.         |
+| PuchScan  | `puchscan/puchscan.py`   | Receipt/image processor: crop, enhance, and return PDFs of receipts via WhatsApp/Puch AI.          |
+| PuchTasks | `puchtasks/puchtasks.py` | Google Keep notes manager: add, list, and delete notes with Google OAuth and Supabase.             |
+| PuchChat  | `puchchat/puchchat.py`   | Real-time chat: connect, send, and fetch messages, see connected users, all in one file.           |
 
-## Quick Setup Guide
+Each file contains:
 
-### Step 1: Install Dependencies
+- All tool definitions (with `@mcp.tool`)
+- Server setup and authentication
+- All business logic and data handling
+- Rich, emoji-friendly user feedback
 
-First, make sure you have Python 3.11 or higher installed. Then:
+## 🛠️ How to Use
 
-```bash
-# Create virtual environment
-uv venv
-
-# Install all required packages
-uv sync
-
-# Activate the environment
-source .venv/bin/activate
-```
-
-### Step 2: Set Up Environment Variables
-
-Create a `.env` file in the project root:
-
-```bash
-# Copy the example file
-cp .env.example .env
-```
-
-Then edit `.env` and add your details:
-
-```env
-AUTH_TOKEN=your_secret_token_here
-MY_NUMBER=919876543210
-```
-
-**Important Notes:**
-- `AUTH_TOKEN`: This is your secret token for authentication. Keep it safe!
-- `MY_NUMBER`: Your WhatsApp number in format `{country_code}{number}` (e.g., `919876543210` for +91-9876543210)
-
-### Step 3: Run the Server
-
-```bash
-cd mcp-bearer-token
-python mcp_starter.py
-```
-
-You'll see: `🚀 Starting MCP server on http://0.0.0.0:8086`
-
-### Step 4: Make It Public (Required by Puch)
-
-Since Puch needs to access your server over HTTPS, you need to expose your local server:
-
-#### Option A: Using ngrok (Recommended)
-
-1. **Install ngrok:**
-   Download from https://ngrok.com/download
-
-2. **Get your authtoken:**
-   - Go to https://dashboard.ngrok.com/get-started/your-authtoken
-   - Copy your authtoken
-   - Run: `ngrok config add-authtoken YOUR_AUTHTOKEN`
-
-3. **Start the tunnel:**
+1. **Clone this repo**
+2. **Install dependencies** (see each service's `requirements.txt` or `pyproject.toml`)
+3. **Set up your `.env` file** with the required secrets (see each service's comments)
+4. **Run any MCP server**:
    ```bash
-   ngrok http 8086
+   python puchkeep/puchkeep.py
+   # or
+   python puchmail/puchmail.py
+   # ...etc
    ```
+5. **Expose your server** (e.g., with ngrok) for Puch AI to connect
 
-#### Option B: Deploy to Cloud
+## ℹ️ Service Descriptions
 
-You can also deploy this to services like:
-- Railway
-- Render
-- Heroku
-- DigitalOcean App Platform
+- **PuchKeep**: Save, list, retrieve, delete, and rename memories. Use multiple memories at once and save lists to text files. All in one file.
+- **PuchMail**: Connect mail accounts, send emails, and manage sessions. Multi-provider support, all logic in one file.
+- **PuchGame**: Play daily anagram games, submit guesses, and view leaderboards. All game logic in one file.
+- **PuchMeds**: Get real-time, AI-powered medicine info (side effects, prevention, posture). All logic in one file.
+- **PuchScan**: Process receipts/images, crop and enhance, return PDFs. All logic in one file.
+- **PuchTasks**: Manage Google Keep notes (add, list, delete) with Google OAuth. All logic in one file.
+- **PuchChat**: Real-time chat with connect/send/fetch/connected-users. All logic in one file.
 
-## How to Connect with Puch AI
+## ✨ Why This Approach?
 
-1. **[Open Puch AI](https://wa.me/+919998881729)** in your browser
-2. **Start a new conversation**
-3. **Use the connect command:**
-   ```
-   /mcp connect https://your-domain.ngrok.app/mcp your_secret_token_here
-   ```
+- **Simplicity**: Each service is a single file—easy to read, debug, and deploy.
+- **Portability**: Copy any file to a new project and you have a working MCP server.
+- **No Boilerplate**: No extra folders or files for core logic—just one file per service.
+- **AI Generated Comments**: Each file includes detailed comments generated by AI to explain the code and its purpose.
+- **Rapid Prototyping**: Quickly test and deploy new MCP servers without complex setups.
 
-### Debug Mode
+## 📚 More Info
 
-To get more detailed error messages:
-
-```
-/mcp diagnostics-level debug
-```
-
-## Customizing the Starter
-
-### Adding New Tools
-
-1. **Create a new tool function:**
-   ```python
-   @mcp.tool(description="Your tool description")
-   async def your_tool_name(
-       parameter: Annotated[str, Field(description="Parameter description")]
-   ) -> str:
-       # Your tool logic here
-       return "Tool result"
-   ```
-
-2. **Add required imports** if needed
-
-
-## 📚 **Additional Documentation Resources**
-
-### **Official Puch AI MCP Documentation**
-- **Main Documentation**: https://puch.ai/mcp
-- **Protocol Compatibility**: Core MCP specification with Bearer & OAuth support
-- **Command Reference**: Complete MCP command documentation
-- **Server Requirements**: Tool registration, validation, HTTPS requirements
-
-### **Technical Specifications**
-- **JSON-RPC 2.0 Specification**: https://www.jsonrpc.org/specification (for error handling)
-- **MCP Protocol**: Core protocol messages, tool definitions, authentication
-
-### **Supported vs Unsupported Features**
-
-**✓ Supported:**
-- Core protocol messages
-- Tool definitions and calls
-- Authentication (Bearer & OAuth)
-- Error handling
-
-**✗ Not Supported:**
-- Videos extension
-- Resources extension
-- Prompts extension
-
-## Getting Help
-
-- **Join Puch AI Discord:** https://discord.gg/VMCnMvYx
-- **Check Puch AI MCP docs:** https://puch.ai/mcp
-- **Puch WhatsApp Number:** +91 99988 81729
+- See each service's README for usage and commands
 
 ---
 
-**Happy coding! 🚀**
-
-Use the hashtag `#BuildWithPuch` in your posts about your MCP!
-
-This starter makes it super easy to create your own MCP server for Puch AI. Just follow the setup steps and you'll be ready to extend Puch with your custom tools!
+_All-in-one-file MCP servers for Puch AI._
