@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 from typing import Annotated, Optional, List, Dict
@@ -523,6 +526,16 @@ async def help_menu() -> str:
         "📥 **view_top_emails(num_emails)**: View the subject and sender of your most recent emails (max 10, Gmail only).\n"
     )
 
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchMail MCP"
+    server_description = dedent("""
+    PuchMail provides secure, multi-provider email sending and management via WhatsApp and Puch AI. Users can sign up, log in, connect mail accounts, send emails, and manage mail sessions with emoji-rich feedback and Supabase integration.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 # --- Run MCP Server ---
 async def main():
     print("🚀 Starting PuchMail MCP server on http://0.0.0.0:8086")

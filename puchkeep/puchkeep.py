@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 from typing import Annotated, Optional, List, Dict
@@ -361,6 +364,7 @@ async def get_memory(
 ) -> str:
     return puchkeep_manager.get_memory(name_of_memory)
 
+
 # --- Tool: delete_memory ---
 DeleteMemoryDesc = RichToolDescription(
     description="Delete a memory by its name. This is irreversible. Show a confirmation message with an emoji indicating deletion.",
@@ -444,6 +448,16 @@ async def puchkeep_help() -> str:
         "📄 - `save_list_to_text_file(file_name, content_list)`: Save a list to a .txt file\n"
     )
 
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchKeep MCP"
+    server_description = dedent("""
+    PuchKeep is your personal memory vault. It allows users to sign up, log in, and securely save, list, retrieve, delete, and rename memories, as well as use multiple memories and save lists to text files. All actions provide emoji-rich feedback and are accessible via WhatsApp and Puch AI.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 # --- Run MCP Server ---
 async def main():
     print("🚀 Starting PuchKeep MCP server on http://0.0.0.0:8086")

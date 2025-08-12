@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 from typing import Annotated, Literal
 import os
@@ -363,7 +366,16 @@ async def submit_guess(
         result_message += f"\n\nTry another guess. You can also check the 'leaderboard', 'leave_game' or 'logout'."
     
     return result_message
-
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchGame: Anagram MCP"
+    server_description = dedent("""
+    PuchGame: Anagram is a daily word challenge game for WhatsApp and Puch AI. Users can sign up, log in, get daily anagrams, submit guesses, view leaderboards, and compete with others, all with real-time Supabase backend and emoji-rich feedback.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 @mcp.tool
 async def leaderboard() -> str:
     """

@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 import io
@@ -52,10 +55,7 @@ class ReceiptProcessor:
         # Apply a slight blur to reduce noise
         blurred_image = gray_image.filter(ImageFilter.GaussianBlur(radius=2))
         
-        # Adaptive thresholding logic (simplified, less robust than OpenCV's)
-        # For a truly adaptive threshold with Pillow, one might need to iterate
-        # through blocks or use more complex histogram analysis.
-        # Here, we use a global threshold and enhance contrast first.
+     # threshold
         
         # Enhance contrast to make text stand out before thresholding
         enhanced_image = ImageOps.autocontrast(blurred_image)
@@ -79,9 +79,7 @@ class ReceiptProcessor:
         width, height = binary_image.size
         pixels = np.array(binary_image) # Convert PIL Image to NumPy array
 
-        # Horizontal projection: sum pixel intensities across columns for each row
-        # 0 is black, 255 is white (after inversion, text is black/0)
-        # So we look for rows with low sums (more black pixels)
+    
         horizontal_proj = np.sum(pixels, axis=1) # Sum columns for each row
         
         # Vertical projection: sum pixel intensities across rows for each column
@@ -130,6 +128,7 @@ class ReceiptProcessor:
              
         return (left, top, right, bottom)
 
+# AI DOWN
 
     async def process_receipt_image(self, image_b64: str) -> Dict[str, str]:
         """
@@ -161,8 +160,7 @@ class ReceiptProcessor:
             binary_image_for_detection = self._preprocess_image(original_image.copy())
 
             # Step 2: Find the main content area
-            # This heuristic is simple and assumes the receipt is mostly straight.
-            # It will try to crop out most of the white margins.
+            
             content_bbox = self._find_content_area(binary_image_for_detection)
             
             # Crop the original image using the detected bounding box
@@ -171,7 +169,6 @@ class ReceiptProcessor:
             # Prepare images for PDF
             pdf_images = []
             
-            # Add the original image (or scaled if too large for PDF)
             pdf_images.append(original_image_for_pdf)
             
             # Add the cropped content image
@@ -180,7 +177,6 @@ class ReceiptProcessor:
             # --- Generate PDF ---
             pdf_output_bytes = io.BytesIO()
             
-            # img2pdf expects a list of image byte streams or file paths
             img_data_list = []
             for pil_img in pdf_images:
                 img_byte_arr = io.BytesIO()
@@ -230,6 +226,16 @@ async def process_receipt_simple(
     """
     return await receipt_processor.process_receipt_image(image_b64)
 
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchScan MCP"
+    server_description = dedent("""
+    PuchScan is a simplified receipt processing server for WhatsApp and Puch AI. It processes receipt images, detects and crops the main content, and returns a PDF with the original and cropped images, all with emoji-rich feedback.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 # --- MCP Tool: help_menu ---
 @mcp.tool
 async def help_menu() -> str:
@@ -244,6 +250,7 @@ async def help_menu() -> str:
         "    *Note: Works best on receipts photographed straight-on.*"
     )
 
+
 # --- Main Server Run Loop ---
 async def main():
     """
@@ -251,6 +258,7 @@ async def main():
     """
     print("🚀 Starting Simplified Receipt Processor MCP server on http://0.0.0.0:8086")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=8086)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 import httpx
@@ -222,7 +225,16 @@ async def greeting() -> str:
     """
     return "Hello! I'm an AI assistant designed to provide you with information on medicine side effects, prevention, and helpful postures."
 
-
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchMeds MCP"
+    server_description = dedent("""
+    PuchMeds is an AI-powered medicine information assistant for WhatsApp and Puch AI. It provides real-time, emoji-rich summaries of side effects, prevention, and helpful postures for any medicine, using live search and Gemini API.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 @mcp.tool(description="Shows the help menu for the Medicine Info tool.")
 async def help_me() -> str:
     return (

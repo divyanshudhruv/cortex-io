@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 import sys
@@ -191,7 +194,16 @@ async def connected_users() -> str:
         return "No users are currently connected."
     
     return f"Connected users ({count}):\n" + "\n".join(users)
-
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchChat MCP"
+    server_description = dedent("""
+    PuchChat is a real-time chat server for WhatsApp and Puch AI. It allows users to connect, send, and fetch messages, see connected users, and interact in real time, all with emoji-rich feedback and Supabase backend.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 # --- Run Server ---
 async def main():
     # Start the Supabase listener in a background task

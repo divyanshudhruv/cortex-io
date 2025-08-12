@@ -1,3 +1,6 @@
+from textwrap import dedent
+# --- Tool: about ---
+
 import asyncio
 import os
 from typing import Annotated, Optional, List
@@ -362,7 +365,17 @@ async def help_menu() -> str:
         "🗑️ - Delete a Google Keep note (`delete_google_keep_note <note_id>`)\n"
         "🚪 - Log out from Google Keep account (`logout_keep`)\n"
     )
-    
+
+@mcp.tool
+async def about() -> dict[str, str]:
+    server_name = "PuchTasks MCP"
+    server_description = dedent("""
+    PuchTasks enables users to manage Google Keep notes via WhatsApp and Puch AI. It supports sign up, login, adding, listing, and deleting notes, and handles Google OAuth and Supabase integration, with emoji-rich feedback for all actions.
+    """)
+    return {
+        "name": server_name,
+        "description": server_description
+    }
 # --- Run MCP Server ---
 async def main():
     print("🚀 Starting PuchKeep MCP server on http://0.0.0.0:8086")
